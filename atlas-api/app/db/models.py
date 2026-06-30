@@ -25,11 +25,13 @@ class user(Base):
 
     password_hash: Mapped[str] = mapped_column(
         String,
-        nullable=False,
+        nullable=True,
     )
     capsule_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), nullable=True, default=None
     )
+    provider: Mapped[str] = mapped_column(String(255), nullable=False, default="local")
+    provider_id: Mapped[str] = mapped_column(String, nullable=True)
 
     email_groups: Mapped[dict[str, list[str]]] = mapped_column(
         MutableDict.as_mutable(JSONB),
