@@ -1,7 +1,7 @@
 import uuid
 from .base import Base
 from sqlalchemy.dialects.postgresql import JSONB, UUID, INET, ARRAY, JSON
-from sqlalchemy import String, DateTime, func, Time
+from sqlalchemy import String, DateTime, func, Time, Integer
 from sqlalchemy.orm import Mapped, mapped_column
 
 from sqlalchemy.ext.mutable import MutableDict
@@ -108,7 +108,7 @@ class refresh_token(Base):
         nullable=True,
     )
     expiry: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    token_version: Mapped[int] = mapped_column(
-        int,
+    token_version: Mapped[Integer] = mapped_column(
+        Integer,
         nullable=False,
     )

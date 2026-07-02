@@ -1,4 +1,5 @@
 import hashlib, os
+import random
 from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException, Depends, status
 from app.schemas.auth import SignupRequest, LoginRequest, RefreshRequest, LogoutRequest
@@ -72,6 +73,7 @@ async def login(request: LoginRequest, db: Session = Depends(getDb)):
         user_id=db_user.id,
         token_hash=hash_token(refresh_token_value),
         expiry=datetime.now(timezone.utc) + timedelta(days=expiry_days),
+        token_version=random.randint(1, 100000),
     )
     db.add(new_refresh_token)
     db.commit()
