@@ -88,3 +88,27 @@ class capsule(Base):
         JSON,
         nullable=False,
     )
+
+
+class refresh_token(Base):
+    __tablename__ = "refresh_token"
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        index=True,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        default=uuid.uuid4,
+        index=True,
+    )
+    token_hash: Mapped[str] = mapped_column(
+        String,
+        nullable=True,
+    )
+    expiry: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    token_version: Mapped[int] = mapped_column(
+        int,
+        nullable=False,
+    )
