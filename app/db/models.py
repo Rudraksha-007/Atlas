@@ -8,6 +8,8 @@ from sqlalchemy.ext.mutable import MutableDict
 
 from datetime import datetime
 
+from datetime import datetime, timezone
+
 
 class user(Base):
     __tablename__ = "user"
@@ -75,7 +77,9 @@ class capsule(Base):
         nullable=False,
     )
     updated_at: Mapped[datetime] = mapped_column(
-        Time(timezone=True),
+        DateTime(timezone=True),
+        default=datetime.now(timezone.utc),
+        onupdate=datetime.now(timezone.utc),
         nullable=False,
     )
 

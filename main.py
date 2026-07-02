@@ -1,5 +1,8 @@
 # main.py
 import os
+from app.capsules.routes import router as capsule_router
+from app.auth.routes import router as auth_router
+
 
 from app.db.base import Base
 from app.db.database import engine
@@ -24,5 +27,6 @@ def home():
     return {"message": "Hello"}
 
 
-app.include_router(auth_router)
 Base.metadata.create_all(bind=engine)
+app.include_router(capsule_router)
+app.include_router(auth_router)

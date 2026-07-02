@@ -2,8 +2,16 @@ import hashlib, os
 import random
 from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException, Depends, status
-from app.schemas.auth import SignupRequest, LoginRequest, RefreshRequest, LogoutRequest
-from app.auth.utils import oauth_signup_or_login, hash_token, verify_user
+from app.schemas.auth import (
+    SignupRequest,
+    LoginRequest,
+    RefreshRequest,
+    LogoutRequest,
+    capsule_response,
+)
+from app.db.models import capsule
+from typing import List
+from app.auth.utils import hash_token, verify_user
 from sqlalchemy.orm import Session
 from app.db.database import getDb
 from app.db.models import user, refresh_token
@@ -145,10 +153,13 @@ async def logout(payload: LogoutRequest, db: Session = Depends(getDb)):
     return {"message": "Successfully Logged out"}
 
 
-@router.post("/my_capsules")
-async def capsules(
+@router.post("/my_capsules", response_model=List[capsule_response])
+async def fetch_capsules(
     db: Session = Depends(getDb),
     user: user = Depends(verify_user),
 ):
     # this endponit is not paginated
-    return {"message": "You are logged in and using a protected Endpoint"}
+    incoming_user_id = user.id
+    stmt = select(capsule).where(capsule.user_id == incoming_user_id)
+    capsule_list = db.execute(stmt).scalars().all()
+    return capsule_list
