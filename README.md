@@ -1,6 +1,6 @@
 <h1>Atlas</h1>
 
-https://img.shields.io/badge/readme%2520style-standard-brightgreen.svg
+<img href=https://img.shields.io/badge/readme%2520style-standard-brightgreen.svg>
 
 Backend service for capsule-based data management with OAuth 2.0 authentication.
 
