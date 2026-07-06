@@ -1,0 +1,359 @@
+diff --git a/app/auth/utils.py b/app/auth/utils.py
+index ee6ead6..c4891c6 100644
+--- a/app/auth/utils.py
++++ b/app/auth/utils.py
+@@ -66,7 +66,7 @@ def create_access_token(data: dict) -> str:
+     payload = data.copy()
+     payload["type"] = "access"
+     payload["exp"] = datetime.now(timezone.utc) + timedelta(
+-        minutes=int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
++        minutes=int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
+     )
+     return jwt.encode(
+         payload, os.getenv("SECRET_KEY"), algorithm=os.getenv("ALGORITHM")
+diff --git a/app/capsules/routes.py b/app/capsules/routes.py
+index 78b440e..37ba1d3 100644
+--- a/app/capsules/routes.py
++++ b/app/capsules/routes.py
+@@ -1,12 +1,16 @@
++import json
++from os import getenv
+ from dotenv import load_dotenv
+ from fastapi import APIRouter, HTTPException, Depends, status
+ from sqlalchemy.orm import Session
++from app.capsules.utils import redis_connection, Redis_service
+ from app.db.database import getDb
+ from datetime import datetime, timedelta, timezone
+ from app.db.models import capsule
+ from app.schemas.capsule import CreateCapsule
+ from app.db.models import user
+ from app.auth.utils import hash_token, verify_user
++from sqlalchemy import select
+ 
+ router = APIRouter(
+     prefix="/capsule",
+@@ -26,8 +30,12 @@ async def create(
+     payload: CreateCapsule,
+     db: Session = Depends(getDb),
+     incoming_user: user = Depends(verify_user),
++    r: Redis_service = Depends(redis_connection),
+ ):
+     email_list_dicts = [email.model_dump() for email in payload.email_list]
++    attach_dict = None
++    if payload.attachments is not None:
++        attach_dict = [att.model_dump() for att in payload.attachments]
+ 
+     new_capsule = capsule(
+         user_id=incoming_user.id,
+@@ -36,11 +44,39 @@ async def create(
+         del_time=payload.del_time,
+         api_ver=payload.api_ver,
+         client_ip=payload.client_ip,
+-        status=payload.status,
++        status="PENDING",
+         email_list=email_list_dicts,
++        attachments=attach_dict,
+         updated_at=datetime.now(timezone.utc),
+     )
++    capsule_dict = {
++        c.name: getattr(new_capsule, c.name) for c in new_capsule.__table__.columns
++    }
++    json_roll = json.dumps(capsule_dict, default=str)
+     db.add(new_capsule)
+     db.commit()
+     db.refresh(new_capsule)
+-    return {"id": new_capsule.id, "message": "Capsule created successfully"}
++    r.set_truth(new_capsule.id, "PENDING", new_capsule.version)
++    r.add_to_queue(new_capsule.id, payload.del_time.timestamp())
++    r.add_to_JSONMap(new_capsule.id, json_roll)
++    return new_capsule
++
++
++@router.get("/status/{id}")
++async def fetch_status(
++    id: str,
++    db: Session = Depends(getDb),
++    incoming_user: user = Depends(verify_user),
++    r: Redis_service = Depends(redis_connection),
++):
++    stmt = select(capsule.user_id).where(id == capsule.id)
++    res = db.execute(stmt).scalar_one_or_none()
++    if res != incoming_user.id:
++        raise HTTPException(
++            status_code=status.HTTP_401_UNAUTHORIZED,
++            detail={"message": "user doesn't hold authority of the entity requested"},
++        )
++    entry = r.get_truth(id)
++    if entry is None:
++        return {"message": "Capsule not found."}
++    return {"STATUS": entry["status"]}
+diff --git a/app/db/models.py b/app/db/models.py
+index e122f9f..b4cff7d 100644
+--- a/app/db/models.py
++++ b/app/db/models.py
+@@ -10,6 +10,8 @@ from datetime import datetime
+ 
+ from datetime import datetime, timezone
+ 
++from typing import Optional
++
+ 
+ class user(Base):
+     __tablename__ = "user"
+@@ -64,9 +66,7 @@ class capsule(Base):
+         nullable=True,
+     )
+     del_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+-    api_ver: Mapped[str] = mapped_column(
+-        String, unique=True, default="v1.0", index=True
+-    )
++    api_ver: Mapped[str] = mapped_column(String, default="v1.0", index=True)
+     client_ip: Mapped[str] = mapped_column(
+         INET,
+         nullable=False,
+@@ -93,6 +93,9 @@ class capsule(Base):
+         nullable=False,
+     )
+ 
++    version: Mapped[int] = mapped_column(Integer, default=0)
++    attachments: Mapped[Optional[list[dict]]] = mapped_column(JSON, nullable=True)
++
+ 
+ class refresh_token(Base):
+     __tablename__ = "refresh_token"
+diff --git a/app/schemas/capsule.py b/app/schemas/capsule.py
+index 1a915dd..6320906 100644
+--- a/app/schemas/capsule.py
++++ b/app/schemas/capsule.py
+@@ -1,4 +1,4 @@
+-from pydantic import BaseModel, EmailStr, Field, field_validator
++from pydantic import BaseModel, EmailStr, Field, field_validator, AnyHttpUrl
+ from datetime import datetime
+ from uuid import UUID, uuid4
+ from typing import List, Optional, Dict, Any
+@@ -8,6 +8,35 @@ import re
+ # DeepSeek generated Code :
+ 
+ 
++class FileAttachment(BaseModel):
++    type: str  # 'image' or 'video'
++    length: int = 0  # 0 for images
++    url: AnyHttpUrl  # validate as URL
++
++    @field_validator("type")
++    @classmethod
++    def check_type(cls, v):
++        if v not in ("image", "video"):
++            raise ValueError('type must be "image" or "video"')
++        return v
++
++    @field_validator("length")
++    @classmethod
++    def check_length(cls, v, info):
++        # info.data contains previously validated fields
++        if "type" in info.data and info.data["type"] == "image" and v != 0:
++            raise ValueError("length must be 0 for images")
++        return v
++
++
++class EmailRecipient(BaseModel):
++    email: EmailStr
++    status: str = "due"
++
++    class Config:
++        extra = "ignore"  # silently drop any extra fields (like 'name')
++
++
+ class CapsuleStatus(str, Enum):
+     ACTIVE = "active"
+     PENDING = "pending"
+@@ -31,6 +60,9 @@ class CreateCapsule(BaseModel):
+         ..., description="List of email recipients"
+     )
+     api_ver: str = Field("v1.0", description="API version")
++    attachments: Optional[List[FileAttachment]] = Field(
++        None, description="List of file attachments (already uploaded to Supabase)"
++    )
+ 
+     @field_validator("client_ip")
+     @classmethod
+@@ -116,7 +148,7 @@ class CapsuleResponse(BaseModel):
+     created_at: datetime
+     updated_at: datetime
+     status: str
+-    email_list: List[Dict[str, Any]]
++    email_list: List[EmailRecipient]
+ 
+     model_config = {
+         "from_attributes": True,  # For SQLAlchemy/Pydantic V2 compatibility
+diff --git a/pyproject.toml b/pyproject.toml
+index 8a9c242..b59b049 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -40,6 +40,7 @@ dependencies = [
+     "python-dotenv==1.2.2",
+     "python-jose==3.5.0",
+     "python-multipart==0.0.32",
++    "redis>=8.0.1",
+     "requests==2.34.2",
+     "requests-oauthlib==2.0.0",
+     "rsa==4.9.1",
+@@ -51,3 +52,9 @@ dependencies = [
+     "urllib3==2.7.0",
+     "uvicorn==0.49.0",
+ ]
++
++[dependency-groups]
++dev = [
++    "pytest>=9.1.1",
++    "requests>=2.34.2",
++]
+diff --git a/uv.lock b/uv.lock
+index 44b9ad8..013736e 100644
+--- a/uv.lock
++++ b/uv.lock
+@@ -86,6 +86,7 @@ dependencies = [
+     { name = "python-dotenv" },
+     { name = "python-jose" },
+     { name = "python-multipart" },
++    { name = "redis" },
+     { name = "requests" },
+     { name = "requests-oauthlib" },
+     { name = "rsa" },
+@@ -98,6 +99,12 @@ dependencies = [
+     { name = "uvicorn" },
+ ]
+ 
++[package.dev-dependencies]
++dev = [
++    { name = "pytest" },
++    { name = "requests" },
++]
++
+ [package.metadata]
+ requires-dist = [
+     { name = "alembic", specifier = ">=1.18.5" },
+@@ -135,6 +142,7 @@ requires-dist = [
+     { name = "python-dotenv", specifier = "==1.2.2" },
+     { name = "python-jose", specifier = "==3.5.0" },
+     { name = "python-multipart", specifier = "==0.0.32" },
++    { name = "redis", specifier = ">=8.0.1" },
+     { name = "requests", specifier = "==2.34.2" },
+     { name = "requests-oauthlib", specifier = "==2.0.0" },
+     { name = "rsa", specifier = "==4.9.1" },
+@@ -147,6 +155,12 @@ requires-dist = [
+     { name = "uvicorn", specifier = "==0.49.0" },
+ ]
+ 
++[package.metadata.requires-dev]
++dev = [
++    { name = "pytest", specifier = ">=9.1.1" },
++    { name = "requests", specifier = ">=2.34.2" },
++]
++
+ [[package]]
+ name = "bcrypt"
+ version = "5.0.0"
+@@ -518,6 +532,15 @@ wheels = [
+     { url = "https://files.pythonhosted.org/packages/1e/5e/d4e9f1a599fb8e573b7b87160658329fbf28d19eac2718f51fc3def3aa5a/idna-3.18-py3-none-any.whl", hash = "sha256:7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2", size = 65455, upload-time = "2026-06-02T14:34:06.319Z" },
+ ]
+ 
++[[package]]
++name = "iniconfig"
++version = "2.3.0"
++source = { registry = "https://pypi.org/simple" }
++sdist = { url = "https://files.pythonhosted.org/packages/72/34/14ca021ce8e5dfedc35312d08ba8bf51fdd999c576889fc2c24cb97f4f10/iniconfig-2.3.0.tar.gz", hash = "sha256:c76315c77db068650d49c5b56314774a7804df16fee4402c1f19d6d15d8c4730", size = 20503, upload-time = "2025-10-18T21:55:43.219Z" }
++wheels = [
++    { url = "https://files.pythonhosted.org/packages/cb/b1/3846dd7f199d53cb17f49cba7e651e9ce294d8497c8c150530ed11865bb8/iniconfig-2.3.0-py3-none-any.whl", hash = "sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12", size = 7484, upload-time = "2025-10-18T21:55:41.639Z" },
++]
++
+ [[package]]
+ name = "mako"
+ version = "1.3.12"
+@@ -569,6 +592,15 @@ wheels = [
+     { url = "https://files.pythonhosted.org/packages/be/9c/92789c596b8df838baa98fa71844d84283302f7604ed565dafe5a6b5041a/oauthlib-3.3.1-py3-none-any.whl", hash = "sha256:88119c938d2b8fb88561af5f6ee0eec8cc8d552b7bb1f712743136eb7523b7a1", size = 160065, upload-time = "2025-06-19T22:48:06.508Z" },
+ ]
+ 
++[[package]]
++name = "packaging"
++version = "26.2"
++source = { registry = "https://pypi.org/simple" }
++sdist = { url = "https://files.pythonhosted.org/packages/d7/f1/e7a6dd94a8d4a5626c03e4e99c87f241ba9e350cd9e6d75123f992427270/packaging-26.2.tar.gz", hash = "sha256:ff452ff5a3e828ce110190feff1178bb1f2ea2281fa2075aadb987c2fb221661", size = 228134, upload-time = "2026-04-24T20:15:23.917Z" }
++wheels = [
++    { url = "https://files.pythonhosted.org/packages/df/b2/87e62e8c3e2f4b32e5fe99e0b86d576da1312593b39f47d8ceef365e95ed/packaging-26.2-py3-none-any.whl", hash = "sha256:5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e", size = 100195, upload-time = "2026-04-24T20:15:22.081Z" },
++]
++
+ [[package]]
+ name = "passlib"
+ version = "1.7.4"
+@@ -578,6 +610,15 @@ wheels = [
+     { url = "https://files.pythonhosted.org/packages/3b/a4/ab6b7589382ca3df236e03faa71deac88cae040af60c071a78d254a62172/passlib-1.7.4-py2.py3-none-any.whl", hash = "sha256:aa6bca462b8d8bda89c70b382f0c298a20b5560af6cbfa2dce410c0a2fb669f1", size = 525554, upload-time = "2020-10-08T19:00:49.856Z" },
+ ]
+ 
++[[package]]
++name = "pluggy"
++version = "1.6.0"
++source = { registry = "https://pypi.org/simple" }
++sdist = { url = "https://files.pythonhosted.org/packages/f9/e2/3e91f31a7d2b083fe6ef3fa267035b518369d9511ffab804f839851d2779/pluggy-1.6.0.tar.gz", hash = "sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3", size = 69412, upload-time = "2025-05-15T12:30:07.975Z" }
++wheels = [
++    { url = "https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl", hash = "sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746", size = 20538, upload-time = "2025-05-15T12:30:06.134Z" },
++]
++
+ [[package]]
+ name = "psycopg"
+ version = "3.3.4"
+@@ -713,6 +754,15 @@ wheels = [
+     { url = "https://files.pythonhosted.org/packages/f6/d2/42dd53d0a85c27606f316d3aa5d2869c4e8470a5ed6dec30e4a1abe19192/pydantic_core-2.46.4-cp314-cp314t-win_arm64.whl", hash = "sha256:4fcbe087dbc2068af7eda3aa87634eba216dbda64d1ae73c8684b621d33f6596", size = 2017325, upload-time = "2026-05-06T13:40:52.723Z" },
+ ]
+ 
++[[package]]
++name = "pygments"
++version = "2.20.0"
++source = { registry = "https://pypi.org/simple" }
++sdist = { url = "https://files.pythonhosted.org/packages/c3/b2/bc9c9196916376152d655522fdcebac55e66de6603a76a02bca1b6414f6c/pygments-2.20.0.tar.gz", hash = "sha256:6757cd03768053ff99f3039c1a36d6c0aa0b263438fcab17520b30a303a82b5f", size = 4955991, upload-time = "2026-03-29T13:29:33.898Z" }
++wheels = [
++    { url = "https://files.pythonhosted.org/packages/f4/7e/a72dd26f3b0f4f2bf1dd8923c85f7ceb43172af56d63c7383eb62b332364/pygments-2.20.0-py3-none-any.whl", hash = "sha256:81a9e26dd42fd28a23a2d169d86d7ac03b46e2f8b59ed4698fb4785f946d0176", size = 1231151, upload-time = "2026-03-29T13:29:30.038Z" },
++]
++
+ [[package]]
+ name = "pyparsing"
+ version = "3.3.2"
+@@ -722,6 +772,22 @@ wheels = [
+     { url = "https://files.pythonhosted.org/packages/10/bd/c038d7cc38edc1aa5bf91ab8068b63d4308c66c4c8bb3cbba7dfbc049f9c/pyparsing-3.3.2-py3-none-any.whl", hash = "sha256:850ba148bd908d7e2411587e247a1e4f0327839c40e2e5e6d05a007ecc69911d", size = 122781, upload-time = "2026-01-21T03:57:55.912Z" },
+ ]
+ 
++[[package]]
++name = "pytest"
++version = "9.1.1"
++source = { registry = "https://pypi.org/simple" }
++dependencies = [
++    { name = "colorama", marker = "sys_platform == 'win32'" },
++    { name = "iniconfig" },
++    { name = "packaging" },
++    { name = "pluggy" },
++    { name = "pygments" },
++]
++sdist = { url = "https://files.pythonhosted.org/packages/e4/47/b9efed96c114afcfa3c9d3fe98a76a1d14c74a9e266d397cf6eb64be5e01/pytest-9.1.1.tar.gz", hash = "sha256:1088fbde8f2b49d95a549a195707afa7a76a3ce9bcadc26b6d71f0ffda5fe313", size = 1636369, upload-time = "2026-06-19T10:58:32.857Z" }
++wheels = [
++    { url = "https://files.pythonhosted.org/packages/24/25/1de2678b631f5a49215c6c96fff41ba892b0a34df68d6d80292b1b48aa7f/pytest-9.1.1-py3-none-any.whl", hash = "sha256:37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c", size = 386536, upload-time = "2026-06-19T10:58:31.347Z" },
++]
++
+ [[package]]
+ name = "python-dotenv"
+ version = "1.2.2"
+@@ -754,6 +820,15 @@ wheels = [
+     { url = "https://files.pythonhosted.org/packages/e1/04/e8135ebd1ad02c56ec633277529b2602ff99ff634be76cdba5744cf554fd/python_multipart-0.0.32-py3-none-any.whl", hash = "sha256:ff6d3f776f16878c894e52e107296ffc890e913c611b1a4ec6c44e2821fe2e23", size = 30042, upload-time = "2026-06-04T16:18:57.319Z" },
+ ]
+ 
++[[package]]
++name = "redis"
++version = "8.0.1"
++source = { registry = "https://pypi.org/simple" }
++sdist = { url = "https://files.pythonhosted.org/packages/cc/c3/928b290c2c0ca99ab96eea5b4ff8f30be8112b075301a7d3ba214a3c8c12/redis-8.0.1.tar.gz", hash = "sha256:afc5a7a2f5a084f5b1880dec548dd45be17db7e43c82a30d84f952aefb05cfb0", size = 5114170, upload-time = "2026-06-23T14:52:37.728Z" }
++wheels = [
++    { url = "https://files.pythonhosted.org/packages/fd/0a/c2345ebf1ebe70840ce3f6c6ee612f8fa749cfbd1b03069c53bf0c62aaad/redis-8.0.1-py3-none-any.whl", hash = "sha256:47daa35a058c23468d6437f17a8c76882cb316b838ef763036af99b96cedd743", size = 502406, upload-time = "2026-06-23T14:52:36.137Z" },
++]
++
+ [[package]]
+ name = "requests"
+ version = "2.34.2"

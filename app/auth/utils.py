@@ -66,7 +66,7 @@ def create_access_token(data: dict) -> str:
     payload = data.copy()
     payload["type"] = "access"
     payload["exp"] = datetime.now(timezone.utc) + timedelta(
-        minutes=int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
+        minutes=int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
     )
     return jwt.encode(
         payload, os.getenv("SECRET_KEY"), algorithm=os.getenv("ALGORITHM")

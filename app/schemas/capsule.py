@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, AnyHttpUrl
 from datetime import datetime
 from uuid import UUID, uuid4
 from typing import List, Optional, Dict, Any
@@ -6,6 +6,35 @@ from enum import Enum
 import re
 
 # DeepSeek generated Code :
+
+
+class FileAttachment(BaseModel):
+    type: str  # 'image' or 'video'
+    length: int = 0  # 0 for images
+    url: AnyHttpUrl  # validate as URL
+
+    @field_validator("type")
+    @classmethod
+    def check_type(cls, v):
+        if v not in ("image", "video"):
+            raise ValueError('type must be "image" or "video"')
+        return v
+
+    @field_validator("length")
+    @classmethod
+    def check_length(cls, v, info):
+        # info.data contains previously validated fields
+        if "type" in info.data and info.data["type"] == "image" and v != 0:
+            raise ValueError("length must be 0 for images")
+        return v
+
+
+class EmailRecipient(BaseModel):
+    email: EmailStr
+    status: str = "due"
+
+    class Config:
+        extra = "ignore"  # silently drop any extra fields (like 'name')
 
 
 class CapsuleStatus(str, Enum):
@@ -31,6 +60,9 @@ class CreateCapsule(BaseModel):
         ..., description="List of email recipients"
     )
     api_ver: str = Field("v1.0", description="API version")
+    attachments: Optional[List[FileAttachment]] = Field(
+        None, description="List of file attachments (already uploaded to Supabase)"
+    )
 
     @field_validator("client_ip")
     @classmethod
@@ -116,7 +148,7 @@ class CapsuleResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     status: str
-    email_list: List[Dict[str, Any]]
+    email_list: List[EmailRecipient]
 
     model_config = {
         "from_attributes": True,  # For SQLAlchemy/Pydantic V2 compatibility

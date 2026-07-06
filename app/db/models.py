@@ -10,6 +10,8 @@ from datetime import datetime
 
 from datetime import datetime, timezone
 
+from typing import Optional
+
 
 class user(Base):
     __tablename__ = "user"
@@ -64,9 +66,7 @@ class capsule(Base):
         nullable=True,
     )
     del_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    api_ver: Mapped[str] = mapped_column(
-        String, unique=True, default="v1.0", index=True
-    )
+    api_ver: Mapped[str] = mapped_column(String, default="v1.0", index=True)
     client_ip: Mapped[str] = mapped_column(
         INET,
         nullable=False,
@@ -92,6 +92,9 @@ class capsule(Base):
         JSON,
         nullable=False,
     )
+
+    version: Mapped[int] = mapped_column(Integer, default=0)
+    attachments: Mapped[Optional[list[dict]]] = mapped_column(JSON, nullable=True)
 
 
 class refresh_token(Base):
