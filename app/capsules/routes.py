@@ -1,4 +1,4 @@
-import json
+import json, uuid
 from os import getenv
 from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException, Depends, status
@@ -11,6 +11,7 @@ from app.schemas.capsule import CreateCapsule
 from app.db.models import user
 from app.auth.utils import hash_token, verify_user
 from sqlalchemy import select
+from app.schemas.capsule import UpdateCapsule, CapsuleResponse
 
 router = APIRouter(
     prefix="/capsule",
@@ -80,3 +81,56 @@ async def fetch_status(
     if entry is None:
         return {"message": "Capsule not found."}
     return {"STATUS": entry["status"]}
+
+
+@router.get("/cancel/{id}")
+async def cancel(
+    id: str,
+    db: Session = Depends(getDb),
+    incoming_user: user = Depends(verify_user),
+    r: Redis_service = Depends(redis_connection),
+):
+    stmt = select(capsule).where(id == capsule.id)
+    res = db.execute(stmt).scalar_one_or_none()
+    if res is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Capsule not found"
+        )
+    if res.user_id != incoming_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"message": "user doesn't hold authority of the entity requested"},
+        )
+    r.del_queue(uuid.UUID(id))
+    # get the details from the redis truth table
+    new_ver = res.version + 1
+    r.set_truth(id, status="CANNED", version=new_ver)
+    r.del_from_JSONMap(uuid.UUID(id))
+    res.status = "CANNED"
+    res.version = new_ver
+    db.commit()
+    return {"message": "the capsule has been taken care of."}
+
+
+@router.patch("/update/{id}", response_model=CapsuleResponse)
+async def update(
+    id: uuid.UUID,
+    payload: UpdateCapsule,
+    db: Session = Depends(getDb),
+    incoming_user: user = Depends(verify_user),
+    r: Redis_service = Depends(redis_connection),
+):
+    stmt = select(capsule).where(capsule.id == id)
+    result = db.execute(stmt)
+    capsule_inst = result.scalar_one_or_none()
+
+    if not capsule_inst:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Capsule not found"
+        )
+    update_dict = payload.model_dump(exclude_unset=True)
+    for key, value in update_dict.items():
+        setattr(capsule_inst, key, value)
+    db.commit()
+    db.refresh(capsule_inst)
+    return capsule_inst

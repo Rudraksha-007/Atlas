@@ -27,8 +27,14 @@ class Redis_service:
     def add_to_queue(self, capsule_id: uuid.UUID, del_time_epoch: float) -> None:
         self._client.zadd(self.QUEUE_KEY, {str(capsule_id): del_time_epoch})
 
+    def del_queue(self, capsule_id: str) -> int:
+        self._client.zrem(self.QUEUE_KEY, str(capsule_id))
+
     def add_to_JSONMap(self, capsule_id: uuid.UUID, json_payload: str) -> None:
         self._client.hset(self.JSON_MAP, str(capsule_id), json_payload)
+
+    def del_from_JSONMap(self, capsule_id: uuid.UUID):
+        self._client.hdel(str(capsule_id))
 
 
 # factory

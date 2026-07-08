@@ -4,6 +4,7 @@ from uuid import UUID, uuid4
 from typing import List, Optional, Dict, Any
 from enum import Enum
 import re
+from pydantic import BaseModel, field_validator, model_validator, ConfigDict
 
 # DeepSeek generated Code :
 
@@ -155,3 +156,57 @@ class CapsuleResponse(BaseModel):
         "json_encoders": {UUID: str, datetime: lambda v: v.isoformat()},
         "use_enum_values": True,
     }
+
+
+class UpdateCapsule(BaseModel):
+    """
+    Schema for partial updates of a capsule.
+    All fields are optional – only provided fields will be updated.
+    """
+
+    subject: Optional[str] = Field(None, max_length=255, description="Capsule subject")
+    body: Optional[str] = Field(None, description="Capsule body content")
+    del_time: Optional[datetime] = Field(
+        None, description="Deletion time (must be in the future if provided)"
+    )
+    status: Optional[CapsuleStatus] = Field(None, description="Capsule status")
+    email_list: Optional[List[EmailRecipient]] = Field(
+        None,
+        description="List of email recipients (replaces the entire list if provided)",
+    )
+    api_ver: Optional[str] = Field(None, description="API version")
+    attachments: Optional[List[FileAttachment]] = Field(
+        None,
+        description="List of file attachments (replaces the entire list if provided)",
+    )
+
+    # ---------- Validators ----------
+    @field_validator("del_time")
+    @classmethod
+    def validate_del_time(cls, v: Optional[datetime]) -> Optional[datetime]:
+        if v is not None and v <= datetime.now(v.tzinfo):
+            raise ValueError("Deletion time must be in the future")
+        return v
+
+    @field_validator("email_list")
+    @classmethod
+    def validate_email_list(
+        cls, v: Optional[List[EmailRecipient]]
+    ) -> Optional[List[EmailRecipient]]:
+        if v is not None and not v:
+            raise ValueError("Email list cannot be empty if provided")
+        return v
+
+    # Optional: Validate attachments if provided (though FileAttachment already validates)
+    # You can add similar for api_ver format if needed
+
+    @model_validator(mode="after")
+    def ensure_at_least_one_field(self) -> "UpdateCapsule":
+        """
+        Prevent empty updates – at least one field must be provided.
+        """
+        # Get all fields that were explicitly set (not None)
+        provided = {k: v for k, v in self.__dict__.items() if v is not None}
+        if not provided:
+            raise ValueError("At least one field must be provided for update")
+        return self
