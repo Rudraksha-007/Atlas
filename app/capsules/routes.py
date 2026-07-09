@@ -120,7 +120,9 @@ async def update(
     incoming_user: user = Depends(verify_user),
     r: Redis_service = Depends(redis_connection),
 ):
-    stmt = select(capsule).where(capsule.id == id)
+    stmt = select(capsule).where(
+        capsule.id == id and incoming_user.id == capsule.user_id
+    )
     result = db.execute(stmt)
     capsule_inst = result.scalar_one_or_none()
 
@@ -131,6 +133,21 @@ async def update(
     update_dict = payload.model_dump(exclude_unset=True)
     for key, value in update_dict.items():
         setattr(capsule_inst, key, value)
+    capsule_inst.version += 1  # increment version
     db.commit()
     db.refresh(capsule_inst)
+    if "del_time" in update_dict:
+        r.del_queue(capsule_inst.id)
+        r.add_to_queue(capsule_inst.id, capsule_inst.del_time.timestamp())
+    if payload.status is None:
+        r.set_truth(capsule_inst.id, capsule_inst.status, capsule_inst.version)
+    else:
+        new_status = payload.status
+        r.set_truth(capsule_inst.id, new_status, capsule_inst.version)
+    capsule_dict = {
+        c.name: getattr(capsule_inst, c.name) for c in capsule_inst.__table__.columns
+    }
+    json_roll = json.dumps(capsule_dict, default=str)
+    r.add_to_JSONMap(capsule_inst.id, json_roll)
+
     return capsule_inst

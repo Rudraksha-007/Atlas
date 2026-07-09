@@ -1,0 +1,70 @@
+diff --git a/app/capsules/routes.py b/app/capsules/routes.py
+index cce489b..00c6f10 100644
+--- a/app/capsules/routes.py
++++ b/app/capsules/routes.py
+@@ -120,7 +120,9 @@ async def update(
+     incoming_user: user = Depends(verify_user),
+     r: Redis_service = Depends(redis_connection),
+ ):
+-    stmt = select(capsule).where(capsule.id == id)
++    stmt = select(capsule).where(
++        capsule.id == id and incoming_user.id == capsule.user_id
++    )
+     result = db.execute(stmt)
+     capsule_inst = result.scalar_one_or_none()
+ 
+@@ -131,6 +133,21 @@ async def update(
+     update_dict = payload.model_dump(exclude_unset=True)
+     for key, value in update_dict.items():
+         setattr(capsule_inst, key, value)
++    capsule_inst.version += 1  # increment version
+     db.commit()
+     db.refresh(capsule_inst)
++    if "del_time" in update_dict:
++        r.del_queue(capsule_inst.id)
++        r.add_to_queue(capsule_inst.id, capsule_inst.del_time.timestamp())
++    if payload.status is None:
++        r.set_truth(capsule_inst.id, capsule_inst.status, capsule_inst.version)
++    else:
++        new_status = payload.status
++        r.set_truth(capsule_inst.id, new_status, capsule_inst.version)
++    capsule_dict = {
++        c.name: getattr(capsule_inst, c.name) for c in capsule_inst.__table__.columns
++    }
++    json_roll = json.dumps(capsule_dict, default=str)
++    r.add_to_JSONMap(capsule_inst.id, json_roll)
++
+     return capsule_inst
+diff --git a/app/capsules/utils.py b/app/capsules/utils.py
+index c8343bd..b0c518e 100644
+--- a/app/capsules/utils.py
++++ b/app/capsules/utils.py
+@@ -16,6 +16,7 @@ class Redis_service:
+         redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+         self._client = redis.from_url(redis_url, decode_responses=True)
+ 
++    # TRUTH MAP
+     def set_truth(self, key: uuid.UUID, status: str, version: int) -> None:
+         value = json.dumps({"status": status, "version": version})
+         self._client.hset(self.TRUTH_TABLE, str(key), value)
+@@ -24,17 +25,19 @@ class Redis_service:
+         data = self._client.hget(self.TRUTH_TABLE, str(key))
+         return json.loads(data) if data else None
+ 
++    # JOB QUEUE
+     def add_to_queue(self, capsule_id: uuid.UUID, del_time_epoch: float) -> None:
+         self._client.zadd(self.QUEUE_KEY, {str(capsule_id): del_time_epoch})
+ 
+     def del_queue(self, capsule_id: str) -> int:
+         self._client.zrem(self.QUEUE_KEY, str(capsule_id))
+ 
++    # DATA SOURCE
+     def add_to_JSONMap(self, capsule_id: uuid.UUID, json_payload: str) -> None:
+         self._client.hset(self.JSON_MAP, str(capsule_id), json_payload)
+ 
+     def del_from_JSONMap(self, capsule_id: uuid.UUID):
+-        self._client.hdel(str(capsule_id))
++        self._client.hdel(self.JSON_MAP, str(capsule_id))
+ 
+ 
+ # factory

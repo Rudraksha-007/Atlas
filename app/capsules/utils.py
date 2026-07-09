@@ -16,6 +16,7 @@ class Redis_service:
         redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
         self._client = redis.from_url(redis_url, decode_responses=True)
 
+    # TRUTH MAP
     def set_truth(self, key: uuid.UUID, status: str, version: int) -> None:
         value = json.dumps({"status": status, "version": version})
         self._client.hset(self.TRUTH_TABLE, str(key), value)
@@ -24,17 +25,19 @@ class Redis_service:
         data = self._client.hget(self.TRUTH_TABLE, str(key))
         return json.loads(data) if data else None
 
+    # JOB QUEUE
     def add_to_queue(self, capsule_id: uuid.UUID, del_time_epoch: float) -> None:
         self._client.zadd(self.QUEUE_KEY, {str(capsule_id): del_time_epoch})
 
     def del_queue(self, capsule_id: str) -> int:
         self._client.zrem(self.QUEUE_KEY, str(capsule_id))
 
+    # DATA SOURCE
     def add_to_JSONMap(self, capsule_id: uuid.UUID, json_payload: str) -> None:
         self._client.hset(self.JSON_MAP, str(capsule_id), json_payload)
 
     def del_from_JSONMap(self, capsule_id: uuid.UUID):
-        self._client.hdel(str(capsule_id))
+        self._client.hdel(self.JSON_MAP, str(capsule_id))
 
 
 # factory
