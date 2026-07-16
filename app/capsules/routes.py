@@ -3,13 +3,14 @@ from os import getenv
 from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException, Depends, status
 from sqlalchemy.orm import Session
-from app.capsules.utils import redis_connection, Redis_service
+
+# from app.capsules.utils import redis_connection, Redis_service
 from app.db.database import getDb
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from app.db.models import capsule
 from app.schemas.capsule import CreateCapsule
 from app.db.models import user
-from app.auth.utils import hash_token, verify_user
+from app.auth.utils import verify_user
 from sqlalchemy import select
 from app.schemas.capsule import UpdateCapsule, CapsuleResponse
 
@@ -31,12 +32,11 @@ async def create(
     payload: CreateCapsule,
     db: Session = Depends(getDb),
     incoming_user: user = Depends(verify_user),
-    r: Redis_service = Depends(redis_connection),
 ):
     email_list_dicts = [email.model_dump() for email in payload.email_list]
     attach_dict = None
     if payload.attachments is not None:
-        attach_dict = [att.model_dump() for att in payload.attachments]
+        attach_dict = [att.model_dump(mode="json") for att in payload.attachments]
 
     new_capsule = capsule(
         user_id=incoming_user.id,
@@ -57,9 +57,9 @@ async def create(
     db.add(new_capsule)
     db.commit()
     db.refresh(new_capsule)
-    r.set_truth(new_capsule.id, "PENDING", new_capsule.version)
-    r.add_to_queue(new_capsule.id, payload.del_time.timestamp())
-    r.add_to_JSONMap(new_capsule.id, json_roll)
+    # r.set_truth(new_capsule.id, "PENDING", new_capsule.version)
+    # r.add_to_queue(new_capsule.id, payload.del_time.timestamp())
+    # r.add_to_JSONMap(new_capsule.id, json_roll)
     return new_capsule
 
 
@@ -68,19 +68,17 @@ async def fetch_status(
     id: str,
     db: Session = Depends(getDb),
     incoming_user: user = Depends(verify_user),
-    r: Redis_service = Depends(redis_connection),
 ):
-    stmt = select(capsule.user_id).where(id == capsule.id)
-    res = db.execute(stmt).scalar_one_or_none()
-    if res != incoming_user.id:
+    stmt = select(capsule).where(capsule.id == id)
+    cap = db.execute(stmt).scalar_one_or_none()
+    if cap is None:
+        raise HTTPException(status_code=404, detail="Capsule not found")
+    if cap.user_id != incoming_user.id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"message": "user doesn't hold authority of the entity requested"},
+            detail="User doesn't hold authority for this capsule",
         )
-    entry = r.get_truth(id)
-    if entry is None:
-        return {"message": "Capsule not found."}
-    return {"STATUS": entry["status"]}
+    return {"STATUS": cap.status}
 
 
 @router.get("/cancel/{id}")
@@ -88,7 +86,6 @@ async def cancel(
     id: str,
     db: Session = Depends(getDb),
     incoming_user: user = Depends(verify_user),
-    r: Redis_service = Depends(redis_connection),
 ):
     stmt = select(capsule).where(id == capsule.id)
     res = db.execute(stmt).scalar_one_or_none()
@@ -101,11 +98,11 @@ async def cancel(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"message": "user doesn't hold authority of the entity requested"},
         )
-    r.del_queue(uuid.UUID(id))
+    # r.del_queue(uuid.UUID(id))
     # get the details from the redis truth table
     new_ver = res.version + 1
-    r.set_truth(id, status="CANNED", version=new_ver)
-    r.del_from_JSONMap(uuid.UUID(id))
+    # r.set_truth(id, status="CANNED", version=new_ver)
+    # r.del_from_JSONMap(uuid.UUID(id))
     res.status = "CANNED"
     res.version = new_ver
     db.commit()
@@ -118,11 +115,8 @@ async def update(
     payload: UpdateCapsule,
     db: Session = Depends(getDb),
     incoming_user: user = Depends(verify_user),
-    r: Redis_service = Depends(redis_connection),
 ):
-    stmt = select(capsule).where(
-        capsule.id == id and incoming_user.id == capsule.user_id
-    )
+    stmt = select(capsule).where(capsule.id == id, capsule.user_id == incoming_user.id)
     result = db.execute(stmt)
     capsule_inst = result.scalar_one_or_none()
 
@@ -136,18 +130,12 @@ async def update(
     capsule_inst.version += 1  # increment version
     db.commit()
     db.refresh(capsule_inst)
-    if "del_time" in update_dict:
-        r.del_queue(capsule_inst.id)
-        r.add_to_queue(capsule_inst.id, capsule_inst.del_time.timestamp())
-    if payload.status is None:
-        r.set_truth(capsule_inst.id, capsule_inst.status, capsule_inst.version)
-    else:
-        new_status = payload.status
-        r.set_truth(capsule_inst.id, new_status, capsule_inst.version)
-    capsule_dict = {
-        c.name: getattr(capsule_inst, c.name) for c in capsule_inst.__table__.columns
-    }
-    json_roll = json.dumps(capsule_dict, default=str)
-    r.add_to_JSONMap(capsule_inst.id, json_roll)
-
+    # if "del_time" in update_dict:
+    #     r.del_queue(capsule_inst.id)
+    #     r.add_to_queue(capsule_inst.id, capsule_inst.del_time.timestamp())
+    # if payload.status is None:
+    #     r.set_truth(capsule_inst.id, capsule_inst.status, capsule_inst.version)
+    # else:
+    #     new_status = payload.status
+    #     r.set_truth(capsule_inst.id, new_status, capsule_inst.version)
     return capsule_inst

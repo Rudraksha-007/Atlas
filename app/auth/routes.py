@@ -41,6 +41,7 @@ async def auth_welcome():
 
 @router.post("/local/signup")
 async def local_signup(payload: SignupRequest, db: Session = Depends(getDb)):
+
     exist_already = db.query(user).filter(user.email == payload.email).first()
     user_name_taken = db.query(user).filter(user.user_name == payload.user_name).first()
 
@@ -54,21 +55,38 @@ async def local_signup(payload: SignupRequest, db: Session = Depends(getDb)):
         email=payload.email,
         password_hash=hash_pass,
     )
+    access_token = create_access_token({"sub": str(new_user.id)})
+    refresh_token_value = create_refresh_token({"sub": str(new_user.id)})
+    new_refresh_token = refresh_token(
+        user_id=new_user.id,
+        token_hash=hash_token(refresh_token_value),
+        expiry=datetime.now(timezone.utc) + timedelta(days=expiry_days),
+        token_version=random.randint(1, 100000),
+    )
+    db.add(new_refresh_token)
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
-    return {"message": "User created"}
+    return {
+        "message": "User created",
+        "access_token": access_token,
+        "refresh_token": refresh_token_value,
+        "token_type": "bearer",
+    }
 
 
 @router.post("/local/login")
 async def login(request: LoginRequest, db: Session = Depends(getDb)):
+
     stmt = select(user).where(user.email == request.email)
     res = db.execute(stmt)
     db_user = res.scalar_one_or_none()
+
     if db_user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="User Not Found"
         )
+
     if not verify_password(request.password, db_user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Credentials"
