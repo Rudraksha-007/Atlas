@@ -57,13 +57,30 @@ sudo systemctl start duckdns-update.timer
 
 ### HTTPS (certbot)
 
-The script installs certbot and tries `certbot --nginx -d atlas.duckdns.org`
-(needs port 80 reachable from the internet). If it failed, run it manually:
+Two ways to get the certificate:
+
+**Path A - HTTP-01** (needs port 80 reachable from the internet): the script
+tries `certbot --nginx -d <domain>` automatically; if it failed, run manually:
 
 ```sh
 sudo certbot --nginx -d atlas.duckdns.org
 sudo systemctl enable --now certbot-renew.timer
 ```
+
+**Path B - DNS-01** (no inbound ports needed; use when the router/ISP hijacks
+or blocks ports 80/443): the script obtains the cert through the DuckDNS TXT
+record and configures nginx TLS on port 443:
+
+```sh
+sudo DUCKDNS_DOMAIN=atlas DUCKDNS_TOKEN=<your-token> \
+  ./deploy/deploy.sh --env-file ./your-filled.env --dns01 --domain atlas.duckdns.org
+```
+
+Then the only router change needed is one forward rule (TCP):
+`8443 -> 192.168.1.50:443`. The API is then reachable at
+`https://atlas.duckdns.org:8443` (port 8443 because the router's own admin
+interface occupies 443 on the WAN side). Renewal is automatic via
+`certbot-renew.timer` (the renewal config stores the DuckDNS token).
 
 ## Manual steps the script does not cover
 
@@ -126,9 +143,10 @@ sudo systemctl restart atlas-backend
   ```
 - **DuckDNS updates**: check `/etc/atlas/duckdns.conf` exists and
   `systemctl status duckdns-update.service` ran clean.
-- **Certbot failed**: port 80 may be blocked by the ISP. Fall back to the
-  DNS-01 plugin: `dnf install python3-pip && pip install certbot-dns-duckdns`
-  then
+- **Certbot failed**: port 80 may be blocked/hijacked by the router or ISP.
+  Re-run the deploy with `--dns01` (Path B above), which needs no inbound
+  ports at all. Manual fallback:
+  `pip install certbot-dns-duckdns` then
   `certbot certonly --dns-duckdns --dns-duckdns-token <TOKEN> -d atlas.duckdns.org`.
 - **ISP blocked port 80 entirely**: forward `8080 -> 80` instead, use
   `https://atlas.duckdns.org:8080`... note HTTPS on non-443 needs a custom

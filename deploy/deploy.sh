@@ -16,6 +16,10 @@
 #
 # Flags:
 #   --no-static-ip   skip nmcli static IP setup (use if running over SSH)
+#   --dns01          obtain the certificate via DNS-01 (DuckDNS plugin) - use
+#                    when the router/ISP blocks inbound ports 80/443. Then
+#                    forward public 8443 -> local 443 on the router and reach
+#                    the API at https://<domain>:8443
 set -euo pipefail
 
 DEPLOY_USER="${SUDO_USER:-$(whoami)}"
@@ -27,9 +31,10 @@ STATIC_IP="192.168.1.50"
 GATEWAY="192.168.1.1"
 REPO_URL="https://github.com/Rudraksha-007/Atlas.git"
 DO_STATIC_IP=1
+CERT_MODE="http"
 
 usage() {
-    sed -n '2,20p' "$0" | sed 's/^# //; s/^#$/  /'
+    sed -n '2,22p' "$0" | sed 's/^# //; s/^#$/  /'
     exit 1
 }
 
@@ -38,6 +43,7 @@ while [[ $# -gt 0 ]]; do
         --env-file)   ENV_SRC="${2:?}"; shift 2 ;;
         --domain)     DOMAIN="${2:?}"; shift 2 ;;
         --no-static-ip) DO_STATIC_IP=0; shift ;;
+        --dns01)      CERT_MODE="dns01"; shift ;;
         *) echo "Unknown argument: $1"; usage ;;
     esac
 done
@@ -159,8 +165,8 @@ if [[ "$DO_STATIC_IP" -eq 1 ]]; then
     fi
 fi
 
-echo "==> 9/10 nginx + certbot (HTTPS for $DOMAIN)"
-cp "$APP_DIR/deploy/nginx.conf" /etc/nginx/conf.d/atlas.conf
+echo "==> 9/10 nginx + TLS (HTTPS for $DOMAIN)"
+sed "s|@DOMAIN@|$DOMAIN|g" "$APP_DIR/deploy/nginx.conf" > /etc/nginx/conf.d/atlas.conf
 cp /etc/nginx/nginx.conf /etc/nginx/nginx.conf.atlas.bak 2>/dev/null || true
 cat > /etc/nginx/nginx.conf <<'EOF'
 user nginx;
@@ -189,7 +195,27 @@ if systemctl is-active --quiet firewalld; then
     firewall-cmd --reload >/dev/null 2>&1 || true
 fi
 
-certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email || true
+if [[ "$CERT_MODE" == "dns01" ]]; then
+    DUCKDNS_TOKEN_VAL="${DUCKDNS_TOKEN:-$(awk -F= '/^DUCKDNS_TOKEN=/{print $2}' /etc/atlas/duckdns.conf 2>/dev/null)}"
+    if [[ -z "$DUCKDNS_TOKEN_VAL" ]]; then
+        echo "WARN: dns01 mode needs a DuckDNS token; write /etc/atlas/duckdns.conf or pass DUCKDNS_TOKEN." >&2
+    else
+        dnf install -y python3-pip >/dev/null 2>&1 || true
+        pip3 install --break-system-packages certbot-dns-duckdns >/dev/null 2>&1 || true
+        certbot certonly --dns-duckdns \
+            --dns-duckdns-token "$DUCKDNS_TOKEN_VAL" \
+            --dns-duckdns-propagation-seconds 30 \
+            -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email || true
+        if [[ -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]]; then
+            sed "s|@DOMAIN@|$DOMAIN|g" "$APP_DIR/deploy/nginx-tls.conf" > /etc/nginx/conf.d/atlas-tls.conf
+            nginx -t && systemctl reload nginx
+        else
+            echo "WARN: no certificate issued - check certbot output above." >&2
+        fi
+    fi
+else
+    certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email || true
+fi
 systemctl enable --now certbot-renew.timer || true
 
 echo "==> 10/10 Always-on hardening (sleep/lid-close)"
@@ -206,7 +232,11 @@ echo
 echo "========================================================"
 echo "Done. Verify with:"
 echo "  curl -s localhost:8000/          # local API"
-echo "  curl -s https://$DOMAIN/  (from outside, e.g. your phone on mobile data)"
-echo "  curl -s https://$DOMAIN/docs"
+if [[ "$CERT_MODE" == "dns01" ]]; then
+    echo "  curl -s https://$DOMAIN:8443/  (from outside, e.g. your phone on mobile data; router must forward public 8443 -> local 443)"
+else
+    echo "  curl -s https://$DOMAIN/  (from outside, e.g. your phone on mobile data)"
+fi
+echo "  curl -s https://$DOMAIN:8443/docs"
 echo "  sudo certbot renew --dry-run"
 echo "========================================================"
