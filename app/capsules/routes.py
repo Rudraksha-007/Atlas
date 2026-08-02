@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException, Depends, status
 from sqlalchemy.orm import Session
 
-# from app.capsules.utils import redis_connection, Redis_service
+from app.capsules.utils import redis_connection
 from app.db.database import getDb
 from datetime import datetime, timezone
 from app.db.models import capsule
@@ -57,7 +57,8 @@ async def create(
     db.add(new_capsule)
     db.commit()
     db.refresh(new_capsule)
-    # r.set_truth(new_capsule.id, "PENDING", new_capsule.version)
+    r = redis_connection()
+    r.set_truth(new_capsule.id, "PENDING", new_capsule.version)
     # r.add_to_queue(new_capsule.id, payload.del_time.timestamp())
     # r.add_to_JSONMap(new_capsule.id, json_roll)
     return new_capsule
@@ -98,10 +99,10 @@ async def cancel(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"message": "user doesn't hold authority of the entity requested"},
         )
-    # r.del_queue(uuid.UUID(id))
-    # get the details from the redis truth table
     new_ver = res.version + 1
-    # r.set_truth(id, status="CANNED", version=new_ver)
+    r = redis_connection()
+    r.set_truth(uuid.UUID(id), status="CANNED", version=new_ver)
+    # r.del_queue(uuid.UUID(id))
     # r.del_from_JSONMap(uuid.UUID(id))
     res.status = "CANNED"
     res.version = new_ver
@@ -130,12 +131,9 @@ async def update(
     capsule_inst.version += 1  # increment version
     db.commit()
     db.refresh(capsule_inst)
-    # if "del_time" in update_dict:
-    #     r.del_queue(capsule_inst.id)
-    #     r.add_to_queue(capsule_inst.id, capsule_inst.del_time.timestamp())
-    # if payload.status is None:
-    #     r.set_truth(capsule_inst.id, capsule_inst.status, capsule_inst.version)
-    # else:
-    #     new_status = payload.status
-    #     r.set_truth(capsule_inst.id, new_status, capsule_inst.version)
+    r = redis_connection()
+    if payload.status is None:
+        r.set_truth(capsule_inst.id, capsule_inst.status, capsule_inst.version)
+    else:
+        r.set_truth(capsule_inst.id, payload.status, capsule_inst.version)
     return capsule_inst
