@@ -19,7 +19,7 @@
 set -euo pipefail
 
 DEPLOY_USER="${SUDO_USER:-$(whoami)}"
-APP_DIR="${APP_DIR:-/home/$DEPLOY_USER/atlas}"
+APP_DIR="${APP_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || echo /home/$DEPLOY_USER/atlas)}"
 UV_BIN="/home/$DEPLOY_USER/.local/bin/uv"
 ENV_SRC=""
 DOMAIN="atlas.duckdns.org"
@@ -123,7 +123,9 @@ set +a
 "$APP_DIR/.venv/bin/alembic" upgrade head
 
 echo "==> 8/10 Installing services"
-sed -e "s|@DEPLOY_USER@|$DEPLOY_USER|g" -e "s|@UV_BIN@|$UV_BIN|g" \
+sed -e "s|@DEPLOY_USER@|$DEPLOY_USER|g" \
+    -e "s|@UV_BIN@|$UV_BIN|g" \
+    -e "s|@APP_DIR@|$APP_DIR|g" \
     "$APP_DIR/deploy/atlas-backend.service.in" > /etc/systemd/system/atlas-backend.service
 systemctl daemon-reload
 systemctl enable --now atlas-backend
