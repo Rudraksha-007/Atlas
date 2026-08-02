@@ -116,6 +116,14 @@ sudo systemctl restart atlas-backend
 
 ## Troubleshooting
 
+- **Service fails with `203/EXEC` / "Permission denied" on `.venv/bin/uvicorn`
+  or `uv`**: SELinux on Fedora blocks systemd from executing binaries inside
+  `$HOME` (they get `user_tmp_t`/`user_home_t` contexts). `deploy.sh` fixes this
+  automatically (semanage fcontext + restorecon, chcon fallback). Manually:
+  ```sh
+  sudo chcon -R -t bin_t ~/atlas/Atlas/.venv/bin
+  sudo systemctl restart atlas-backend
+  ```
 - **DuckDNS updates**: check `/etc/atlas/duckdns.conf` exists and
   `systemctl status duckdns-update.service` ran clean.
 - **Certbot failed**: port 80 may be blocked by the ISP. Fall back to the

@@ -93,6 +93,17 @@ chown -R "$DEPLOY_USER":"$DEPLOY_USER" "$APP_DIR"
 echo "==> 5/10 Installing Python deps (uv sync --no-dev)"
 runuser -u "$DEPLOY_USER" -- "$UV_BIN" sync --no-dev --directory "$APP_DIR" --python 3.14
 
+echo "==> 5b/10 Fixing SELinux contexts for executables (Fedora Enforcing)"
+if command -v semanage >/dev/null 2>&1; then
+    semanage fcontext -a -t bin_t "$APP_DIR/.venv/bin(/.*)?" 2>/dev/null || true
+    semanage fcontext -a -t bin_t "$UV_BIN" 2>/dev/null || true
+    restorecon -R "$APP_DIR/.venv/bin" 2>/dev/null || true
+    restorecon "$UV_BIN" 2>/dev/null || true
+else
+    chcon -R -t bin_t "$APP_DIR/.venv/bin" 2>/dev/null || true
+    chcon -t bin_t "$UV_BIN" 2>/dev/null || true
+fi
+
 echo "==> 6/10 Writing /etc/atlas config"
 mkdir -p /etc/atlas /var/www/certbot
 chmod 700 /etc/atlas
@@ -127,7 +138,6 @@ set +a
 
 echo "==> 8/10 Installing services"
 sed -e "s|@DEPLOY_USER@|$DEPLOY_USER|g" \
-    -e "s|@UV_BIN@|$UV_BIN|g" \
     -e "s|@APP_DIR@|$APP_DIR|g" \
     "$APP_DIR/deploy/atlas-backend.service.in" > /etc/systemd/system/atlas-backend.service
 systemctl daemon-reload
