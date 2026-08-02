@@ -1,0 +1,19 @@
+[Unit]
+Description=Atlas FastAPI backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@DEPLOY_USER@
+Group=@DEPLOY_USER@
+WorkingDirectory=/home/@DEPLOY_USER@/atlas
+EnvironmentFile=/etc/atlas/.env
+ExecStart=@UV_BIN@ run uvicorn main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
