@@ -96,7 +96,10 @@ runuser -u "$DEPLOY_USER" -- "$UV_BIN" sync --no-dev --directory "$APP_DIR" --py
 echo "==> 6/10 Writing /etc/atlas config"
 mkdir -p /etc/atlas /var/www/certbot
 chmod 700 /etc/atlas
-cp "$ENV_SRC" /etc/atlas/.env
+if [[ "$ENV_SRC" != "/etc/atlas/.env" ]]; then
+    cp "$ENV_SRC" /etc/atlas/.env
+fi
+sed -i -E 's/^([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=[[:space:]]*(.*)$/\1=\2/' /etc/atlas/.env
 if ! grep -q "^ALLOWED_ORIGINS=" /etc/atlas/.env; then
     printf '\nALLOWED_ORIGINS=http://localhost:5173,https://%s\n' "$DOMAIN" >> /etc/atlas/.env
 fi

@@ -15,6 +15,17 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
+# Prefer DATABASE_URL over the alembic.ini value (used in deployment).
+# '%' must be escaped for configparser interpolation.
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+if os.getenv("DATABASE_URL"):
+    config.set_main_option(
+        "sqlalchemy.url", os.getenv("DATABASE_URL").replace("%", "%%")
+    )
+
 # add your model's MetaData object here
 # for 'autogenerate' support
 # from myapp import mymodel
