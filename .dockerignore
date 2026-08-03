@@ -1,0 +1,16 @@
+.git
+.gitignore
+.venv
+.env
+.env.*
+frontend
+node_modules
+deploy
+__pycache__
+*.py[cod]
+.pytest_cache
+test_db.py
+diff_Log.txt
+diffu
+cat
+*.md
