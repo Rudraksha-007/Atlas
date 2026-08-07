@@ -1,127 +1,104 @@
-# Deploying Atlas backend (ThinkPad, Fedora, DuckDNS)
+# Deploying Atlas backend (ThinkPad, Fedora, nginx + Cloudflare Tunnel)
 
-This deploys the FastAPI backend as a 24/7 systemd service behind nginx with
-HTTPS, reachable at `https://atlas.duckdns.org`. Postgres stays on Supabase,
-Redis stays on Redis Cloud — only uvicorn runs on the ThinkPad. No dedicated
-service user is needed; the service runs as your normal user.
+This deploys the FastAPI backend as a 24/7 systemd service behind nginx,
+exposed to the internet through a Cloudflare Tunnel at
+`https://atlas.<you>.pp.ua`. Postgres stays on Supabase, Redis stays on
+Redis Cloud — only uvicorn, nginx and cloudflared run on the ThinkPad.
+
+No inbound ports, no static IP, no certbot: the tunnel connects **out** to
+Cloudflare, and Cloudflare's edge terminates HTTPS for free.
+
+## Architecture
+
+```
+[phone/internet] --HTTPS--> Cloudflare edge <--tunnel(outbound)--> cloudflared
+                                   ^                                  |
+                                   |                     nginx :80 (ThinkPad)
+                                   |                                  v
+                                   +---------- uvicorn 127.0.0.1:8000
+```
 
 ## Before you start
 
-1. **DuckDNS**: create the subdomain `atlas` at https://duckdns.org and copy
-   your token (in the "update" link, between `token=` and `&ip=`).
-2. **Router**: static IP `192.168.1.50` for the ThinkPad and two port-forward
-   rules (TCP): `80 -> 192.168.1.50:80` and `443 -> 192.168.1.50:443`.
-   (On the GX router: Services -> Port Forwarding, local IP = 192.168.1.50,
-   remote IP = 0.0.0.0, protocol TCP, remote/local ports 80 or 443,
-   interface = WAN.)
-3. **.env**: copy `.env.example` from the repo root to `.env`, fill in real
+1. **Free domain (pp.ua)**: register at https://pp.ua (free; approval usually
+   within hours). Pick something like `atlas.<yourname>.pp.ua`.
+2. **Cloudflare**: add the domain as a site (free plan). It gives you two
+   nameservers (e.g. `xxx.ns.cloudflare.com`) — set them in the pp.ua control
+   panel. Wait for propagation: `dig +short atlas.<you>.pp.ua ns` should show
+   `*.ns.cloudflare.com`.
+3. **Tunnel**: Cloudflare Zero Trust (free) -> Networks -> Tunnels -> Create a
+   tunnel (Cloudflared, named). Add a public hostname:
+   `atlas.<you>.pp.ua` -> service `http://localhost` (nginx on :80).
+   Copy the tunnel token (used with `--cf-token`).
+4. **.env**: copy `.env.example` from the repo root to `.env`, fill in real
    values (DATABASE_URL, REDIS_URL, SECRET_KEY). Keep `ALLOWED_ORIGINS`
-   including `https://atlas.duckdns.org`.
+   containing `https://atlas.<you>.pp.ua`.
 
 ## Install (automated)
 
-On the ThinkPad:
+On the ThinkPad (works over SSH — no network blips anymore):
 
 ```sh
 git clone https://github.com/Rudraksha-007/Atlas.git ~/atlas
 cd ~/atlas
-sudo DUCKDNS_DOMAIN=atlas DUCKDNS_TOKEN=<your-token> \
-  ./deploy/deploy.sh --env-file ./your-filled.env --domain atlas.duckdns.org
+cp /path/to/your-filled.env ./env.tmp        # scp it from your dev machine
+```
+
+The real command:
+
+```sh
+sudo ./deploy/deploy.sh --env-file ./env.tmp \
+     --domain atlas.<you>.pp.ua --cf-token <TUNNEL_TOKEN>
+```
+
+Prefer not to have the token in shell history? Skip `--cf-token` and write it
+afterwards (the script will warn you):
+
+```sh
+printf 'CF_TOKEN=<TUNNEL_TOKEN>\n' | sudo tee /etc/atlas/cloudflared.conf
+sudo chmod 600 /etc/atlas/cloudflared.conf
+sudo cloudflared service install "<TUNNEL_TOKEN>"
+sudo systemctl enable --now cloudflared
 ```
 
 The script:
-- installs nginx, certbot, curl and uv (Python 3.14)
-- clones/pulls the repo to `~/atlas`, runs `uv sync --no-dev`
-- copies your `.env` to root-only `/etc/atlas/.env` (appends `ALLOWED_ORIGINS`
-  with your domain if missing)
-- writes `/etc/atlas/duckdns.conf` (from the token above), installs the
-  5-minute DuckDNS updater
+- installs nginx and cloudflared (Cloudflare RPM repo)
+- installs uv + Python 3.14, clones/pulls the repo to `~/atlas`,
+  runs `uv sync --no-dev`
+- copies your `.env` to root-only `/etc/atlas/.env` (appends your domain to
+  `ALLOWED_ORIGINS` if missing)
 - runs `alembic upgrade head` against the database
-- renders and starts `atlas-backend.service` (uvicorn on 127.0.0.1:8000)
-- sets the static IP `192.168.1.50` via nmcli
-- configures nginx + lets you set up certbot HTTPS (see next section)
-- masks sleep/suspend/hibernate and ignores lid-close
-
-Run it from a local terminal on the ThinkPad, not over SSH, because the
-static-IP step blips the network. Over SSH, add `--no-static-ip` and set the
-IP manually (below).
-
-If you don't want the token in shell history, let the script skip the DuckDNS
-step and instead write `/etc/atlas/duckdns.conf` afterwards:
-
-```sh
-printf 'DUCKDNS_DOMAIN=atlas\nDUCKDNS_TOKEN=<your-token>\n' | sudo tee /etc/atlas/duckdns.conf
-sudo chmod 600 /etc/atlas/duckdns.conf
-sudo systemctl start duckdns-update.timer
-```
-
-### HTTPS (certbot)
-
-Two ways to get the certificate:
-
-**Path A - HTTP-01** (needs port 80 reachable from the internet): the script
-tries `certbot --nginx -d <domain>` automatically; if it failed, run manually:
-
-```sh
-sudo certbot --nginx -d atlas.duckdns.org
-sudo systemctl enable --now certbot-renew.timer
-```
-
-**Path B - DNS-01** (no inbound ports needed; use when the router/ISP hijacks
-or blocks ports 80/443): the script obtains the cert through the DuckDNS TXT
-record and configures nginx TLS on port 443:
-
-```sh
-sudo DUCKDNS_DOMAIN=atlas DUCKDNS_TOKEN=<your-token> \
-  ./deploy/deploy.sh --env-file ./your-filled.env --dns01 --domain atlas.duckdns.org
-```
-
-Then the only router change needed is one forward rule (TCP):
-`8443 -> 192.168.1.50:443`. The API is then reachable at
-`https://atlas.duckdns.org:8443` (port 8443 because the router's own admin
-interface occupies 443 on the WAN side). Renewal is automatic via
-`certbot-renew.timer` (the renewal config stores the DuckDNS token).
-
-## Manual steps the script does not cover
-
-### Static IP (if you skipped it)
-```sh
-nmcli con show --active          # find your wifi connection name
-nmcli con mod "<conn>" ipv4.addresses 192.168.1.50/24 \
-    ipv4.gateway 192.168.1.1 ipv4.method manual \
-    ipv4.dns "1.1.1.1 8.8.8.8" ipv4.ignore-auto-dns yes
-nmcli con up "<conn>"
-```
-
-### BIOS / power (always-on)
-- Plug in the ThinkPad and leave the lid open or closed (lid-close now does
-  nothing thanks to the logind override).
-- BIOS: enable "power on when AC is connected" if available.
-- Optional: a small UPS to survive power blips.
+- installs and starts `atlas-backend.service` (uvicorn on 127.0.0.1:8000)
+- installs the tunnel token and starts `cloudflared`
+- writes the nginx vhost (HTTP-only, proxy to uvicorn) and starts nginx
+- masks sleep/suspend/hibernate and ignores lid-close (24/7 operation)
 
 ## Verify
 
+On the ThinkPad:
+
 ```sh
-systemctl status atlas-backend        # should be active (running)
-curl -s localhost:8000/               # local API
-sudo certbot renew --dry-run          # cert renewal works
+systemctl status atlas-backend nginx cloudflared   # all active (running)
+curl -s localhost:8000/                            # local API
+journalctl -u cloudflared -f                       # tunnel connected
 ```
 
 From your phone (mobile data, not home WiFi):
+
 ```sh
-curl -s https://atlas.duckdns.org/
-curl -s https://atlas.duckdns.org/docs
+curl -s https://atlas.<you>.pp.ua/
+curl -s https://atlas.<you>.pp.ua/docs
 ```
 
 End-to-end: signup -> login -> refresh -> create capsule through
-`https://atlas.duckdns.org`.
+`https://atlas.<you>.pp.ua`.
 
 ## Useful commands
 
 ```sh
 journalctl -u atlas-backend -f        # backend logs
 systemctl restart atlas-backend       # after a code update
-sudo systemctl status duckdns-update.timer
+systemctl restart cloudflared         # if the tunnel drops
 ```
 
 ## Updating the backend
@@ -133,21 +110,23 @@ sudo systemctl restart atlas-backend
 
 ## Troubleshooting
 
+- **502/521 from the tunnel**: nginx is probably not seeing uvicorn.
+  `curl -s localhost:8000/` locally; check `journalctl -u atlas-backend -u nginx`.
+- **Tunnel shows "HEALTHY" but site is down**: public hostname in Zero Trust
+  must point to `http://localhost` (port 80, nginx) — not to port 8000.
+- **cloudflared missing**: the script installs it from the Cloudflare RPM
+  repo; on failure do it manually:
+  `sudo dnf install -y cloudflared` (after writing /etc/yum.repos.d/cloudflared.repo).
+- **AVC denials in `journalctl -u nginx`** (SELinux): proxying to 127.0.0.1:8000
+  works out of the box (port 8000 is in `http_port_t`). If you still see
+  denials: `sudo setsebool -P nginx_can_network_connect 1`.
 - **Service fails with `203/EXEC` / "Permission denied" on `.venv/bin/uvicorn`
   or `uv`**: SELinux on Fedora blocks systemd from executing binaries inside
-  `$HOME` (they get `user_tmp_t`/`user_home_t` contexts). `deploy.sh` fixes this
-  automatically (semanage fcontext + restorecon, chcon fallback). Manually:
+  `$HOME`. `deploy.sh` fixes this automatically. Manually:
   ```sh
-  sudo chcon -R -t bin_t ~/atlas/Atlas/.venv/bin
+  sudo chcon -R -t bin_t ~/atlas/.venv/bin
   sudo systemctl restart atlas-backend
   ```
-- **DuckDNS updates**: check `/etc/atlas/duckdns.conf` exists and
-  `systemctl status duckdns-update.service` ran clean.
-- **Certbot failed**: port 80 may be blocked/hijacked by the router or ISP.
-  Re-run the deploy with `--dns01` (Path B above), which needs no inbound
-  ports at all. Manual fallback:
-  `pip install certbot-dns-duckdns` then
-  `certbot certonly --dns-duckdns --dns-duckdns-token <TOKEN> -d atlas.duckdns.org`.
-- **ISP blocked port 80 entirely**: forward `8080 -> 80` instead, use
-  `https://atlas.duckdns.org:8080`... note HTTPS on non-443 needs a custom
-  port in nginx; the simplest fallback then is a Cloudflare Tunnel.
+- **CORS errors from the frontend**: make sure `ALLOWED_ORIGINS` in
+  `/etc/atlas/.env` includes `https://atlas.<you>.pp.ua`, then
+  `sudo systemctl restart atlas-backend`.
